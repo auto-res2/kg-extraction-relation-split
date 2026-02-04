@@ -638,7 +638,26 @@ F1        = 2 * Precision * Recall / (Precision + Recall)
 
 合計候補 = 5パスの統合・重複除去後の候補数、制約後 = domain/range制約適用後の最終数
 
-### 6.4 Relation-Split グループ別抽出統計
+### 6.4 アブレーションスタディ（5モデル構成比較）
+
+JacRED testセットから選択した10文書に対して、5つのモデル構成でBaseline（One-shot）とRelation-Splitを比較した結果を以下に示す。
+
+| Model Config | Baseline P | Baseline R | Baseline F1 | RelSplit P | RelSplit R | RelSplit F1 | Delta F1 |
+|---|---|---|---|---|---|---|---|
+| gemini-3-flash t=2048 | 0.298 | 0.209 | 0.246 | 0.212 | 0.162 | 0.184 | -0.062 |
+| gemini-3-flash t=0 | 0.258 | 0.169 | 0.204 | 0.244 | 0.196 | **0.217** | +0.013 |
+| gemini-2.5-flash t=2048 | 0.174 | 0.182 | 0.178 | 0.198 | 0.169 | 0.182 | +0.004 |
+| gemini-2.5-flash t=0 | 0.179 | 0.142 | 0.158 | 0.211 | 0.155 | **0.179** | +0.020 |
+| gemini-2.0-flash | 0.183 | 0.142 | 0.160 | 0.303 | 0.155 | **0.205** | +0.046 |
+
+**主な知見:**
+
+- RelSplitは5構成中4構成でF1を改善した（gemini-3-flash t=2048を除く全構成）
+- gemini-3-flash t=2048のみ回帰（-0.062）。thinkingの推論予算がRelSplitの分割アプローチと干渉し、性能を悪化させている可能性がある
+- 最大改善はgemini-2.0-flash（+0.046）。thinking非対応モデルでRelSplitの効果が最も顕著に現れた
+- thinking無効（t=0）の構成では一貫してRelSplitが改善を示しており、RelSplit手法はthinkingを使わない設定でmodestだが安定した効果を持つことが示唆される
+
+### 6.5 Relation-Split グループ別抽出統計
 
 各文書・各グループで抽出されたトリプル数:
 
