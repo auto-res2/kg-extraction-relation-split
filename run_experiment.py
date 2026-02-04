@@ -7,7 +7,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from data_loader import load_jacred, select_dev_docs, select_few_shot, build_constraint_table
+from data_loader import load_jacred, select_dev_docs, select_few_shot
 from llm_client import load_api_key, create_client
 from extraction import run_baseline
 from evaluation import align_entities, evaluate_relations, aggregate_results
@@ -29,8 +29,6 @@ def run_condition(name, docs, few_shot, client, schema_info, constraint_table=No
         # Currently only Baseline is implemented.
         # RelationSplit will be added here as a second condition.
         entities, triples = run_baseline(doc, few_shot, client, schema_info)
-        stats = None
-        stats_str = ""
 
         alignment = align_entities(entities, doc["vertexSet"])
         metrics = evaluate_relations(triples, doc.get("labels", []), alignment)
@@ -38,7 +36,7 @@ def run_condition(name, docs, few_shot, client, schema_info, constraint_table=No
         print(
             f"  [{i+1}/{len(docs)}] {title}: "
             f"P={metrics['precision']:.2f} R={metrics['recall']:.2f} F1={metrics['f1']:.2f} "
-            f"(TP={metrics['tp']} FP={metrics['fp']} FN={metrics['fn']}){stats_str}"
+            f"(TP={metrics['tp']} FP={metrics['fp']} FN={metrics['fn']})"
         )
 
         doc_result = {
@@ -69,11 +67,9 @@ def main():
     data = load_jacred()
     dev_docs = select_dev_docs(data["dev"], n=NUM_DOCS)
     few_shot = select_few_shot(data["train"])
-    constraint_table = build_constraint_table(data["train"])
 
     print(f"Dev docs: {NUM_DOCS} (stratified by size)")
     print(f"Few-shot: {few_shot['title']}")
-    print(f"Constraint table: {len(constraint_table)} relation types")
     for doc in dev_docs:
         n_ents = len(doc["vertexSet"])
         n_rels = len(doc.get("labels", []))
