@@ -1,4 +1,4 @@
-"""Main experiment script: Baseline vs Proposed on JacRED dev subset."""
+"""Main experiment script: Baseline vs RelationSplit on JacRED dev subset."""
 
 import json
 import sys
@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from data_loader import load_jacred, select_dev_docs, select_few_shot, build_constraint_table
 from llm_client import load_api_key, create_client
-from extraction import run_baseline, run_proposed
+from extraction import run_baseline
 from evaluation import align_entities, evaluate_relations, aggregate_results
 
 ENV_PATH = os.path.expanduser(
@@ -26,19 +26,11 @@ def run_condition(name, docs, few_shot, client, schema_info, constraint_table=No
     for i, doc in enumerate(docs):
         title = doc["title"]
 
-        if constraint_table is not None:
-            entities, triples, stats = run_proposed(
-                doc, few_shot, client, schema_info, constraint_table
-            )
-            stats_str = (
-                f" S1={stats['stage1_candidates']}"
-                f" S2={stats['stage2_kept']}"
-                f" Final={stats['after_constraints']}"
-            )
-        else:
-            entities, triples = run_baseline(doc, few_shot, client, schema_info)
-            stats = None
-            stats_str = ""
+        # Currently only Baseline is implemented.
+        # RelationSplit will be added here as a second condition.
+        entities, triples = run_baseline(doc, few_shot, client, schema_info)
+        stats = None
+        stats_str = ""
 
         alignment = align_entities(entities, doc["vertexSet"])
         metrics = evaluate_relations(triples, doc.get("labels", []), alignment)
@@ -57,8 +49,6 @@ def run_condition(name, docs, few_shot, client, schema_info, constraint_table=No
             "num_entities_aligned": len(alignment),
             **metrics,
         }
-        if stats:
-            doc_result["stage_stats"] = stats
         per_doc_results.append(doc_result)
 
     agg = aggregate_results(per_doc_results)
@@ -103,18 +93,17 @@ def main():
     baseline_results = run_condition(
         "Condition 1: Baseline (One-shot)", dev_docs, few_shot, client, schema_info
     )
-    proposed_results = run_condition(
-        "Condition 2: Proposed (Generate+Verify)",
-        dev_docs, few_shot, client, schema_info, constraint_table
-    )
+    # TODO: Add RelationSplit condition here once run_relation_split() is implemented
+    # relation_split_results = run_condition(
+    #     "Condition 2: RelationSplit", dev_docs, few_shot, client, schema_info, constraint_table
+    # )
 
     # Comparison
     b = baseline_results["aggregate"]
-    p = proposed_results["aggregate"]
     print("\n=== Comparison ===")
-    print(f"{'':>12} {'Precision':>10} {'Recall':>8} {'F1':>6} {'TP':>5} {'FP':>5} {'FN':>5}")
-    print(f"{'Baseline':>12} {b['precision']:>10.2f} {b['recall']:>8.2f} {b['f1']:>6.2f} {b['tp']:>5} {b['fp']:>5} {b['fn']:>5}")
-    print(f"{'Proposed':>12} {p['precision']:>10.2f} {p['recall']:>8.2f} {p['f1']:>6.2f} {p['tp']:>5} {p['fp']:>5} {p['fn']:>5}")
+    print(f"{'':>14} {'Precision':>10} {'Recall':>8} {'F1':>6} {'TP':>5} {'FP':>5} {'FN':>5}")
+    print(f"{'Baseline':>14} {b['precision']:>10.2f} {b['recall']:>8.2f} {b['f1']:>6.2f} {b['tp']:>5} {b['fp']:>5} {b['fn']:>5}")
+    # print(f"{'RelationSplit':>14} {r['precision']:>10.2f} {r['recall']:>8.2f} {r['f1']:>6.2f} {r['tp']:>5} {r['fp']:>5} {r['fn']:>5}")
 
     # Save results
     output = {
@@ -126,7 +115,6 @@ def main():
         },
         "conditions": {
             "baseline": baseline_results,
-            "proposed": proposed_results,
         },
     }
 
