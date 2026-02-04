@@ -41,6 +41,22 @@ RELATION_JAPANESE = {
     "P674": "登場人物（作品の登場人物）",
 }
 
+RELATION_GROUPS = {
+    "biographical": ["P569", "P570", "P19", "P20", "P27", "P69", "P108", "P937"],
+    "family_social": ["P40", "P3373", "P26"],
+    "geographic": ["P131", "P276", "P1376", "P36", "P361", "P527"],
+    "organizational": ["P463", "P6", "P112", "P127", "P137", "P1830", "P121", "P166"],
+    "creative_media": ["P170", "P175", "P123", "P1441", "P400", "P674", "P155", "P156", "P1344", "P710"],
+}
+
+GROUP_FOCUS_INSTRUCTIONS = {
+    "biographical": "この文書から、人物の経歴に関する情報（生年月日、没年月日、出生地、死没地、国籍、出身校、雇用主、活動場所）に注目して抽出してください。",
+    "family_social": "この文書から、家族・社会的関係（子、兄弟姉妹、配偶者）に注目して抽出してください。",
+    "geographic": "この文書から、地理的関係（行政区画、所在地、首都、上位概念、構成要素）に注目して抽出してください。",
+    "organizational": "この文書から、組織に関する関係（所属、首長、設立者、所有者、運営者、所有物、運営対象、受賞）に注目して抽出してください。",
+    "creative_media": "この文書から、創作・メディアに関する関係（制作者、出演者、出版社、登場作品、プラットフォーム、登場人物、前任・後任、参加イベント、参加者）に注目して抽出してください。",
+}
+
 ENTITY_TYPES_JAPANESE = {
     "PER": "人物",
     "ORG": "組織",
@@ -144,3 +160,74 @@ def build_verification_prompt(
 - エンティティの型が関係と整合しているか
 - 関係の方向（head→tail）が正しいか
 根拠が不十分な候補はkeep=falseとしてください。"""
+
+
+def build_group_system_prompt(group_name: str, group_pcodes: list[str], rel_info: dict) -> str:
+    """Build system prompt focused on a specific relation group."""
+    entity_lines = []
+    for etype, desc in ENTITY_TYPES_JAPANESE.items():
+        entity_lines.append(f"  - {etype}: {desc}")
+
+    relation_lines = []
+    for pcode in group_pcodes:
+        eng_name = rel_info.get(pcode, "")
+        ja_desc = RELATION_JAPANESE.get(pcode, "")
+        if eng_name:
+            relation_lines.append(f"  - {pcode} ({eng_name}): {ja_desc}")
+
+    focus_instruction = GROUP_FOCUS_INSTRUCTIONS.get(group_name, "")
+
+    return f"""あなたは日本語文書から知識グラフ（エンティティと関係）を抽出する専門家です。
+
+## タスク
+与えられた日本語文書から、エンティティ（固有表現）とエンティティ間の関係を抽出してください。
+{focus_instruction}
+
+## エンティティタイプ（8種類）
+{chr(10).join(entity_lines)}
+
+## 対象関係タイプ（このパスで抽出する関係のみ）
+{chr(10).join(relation_lines)}
+
+## ルール
+- エンティティには上記のタイプのみ使用してください。
+- 関係には上記のPコード（{', '.join(group_pcodes)}）のみ使用してください。他の関係タイプは抽出しないでください。
+- 各関係には、根拠となる文書中のテキストをevidenceとして付与してください。
+- headとtailにはentitiesのidを指定してください。"""
+
+
+def build_group_extraction_prompt(
+    doc_text: str,
+    few_shot_text: str,
+    few_shot_output: dict,
+    group_pcodes: list[str],
+) -> str:
+    """Build extraction prompt filtered for a specific relation group."""
+    group_pcode_set = set(group_pcodes)
+
+    # Filter few-shot output to only include relations from current group
+    filtered_output = {"entities": few_shot_output.get("entities", [])}
+    filtered_relations = [
+        r for r in few_shot_output.get("relations", [])
+        if r.get("relation") in group_pcode_set
+    ]
+
+    if filtered_relations:
+        filtered_output["relations"] = filtered_relations
+    else:
+        # Show entities only if no matching relations in few-shot
+        filtered_output["relations"] = []
+
+    few_shot_json = json.dumps(filtered_output, ensure_ascii=False, indent=2)
+
+    return f"""## 例
+入力文書:
+{few_shot_text}
+
+出力:
+{few_shot_json}
+
+## 対象文書
+{doc_text}
+
+上記の文書からエンティティと関係を抽出してください。指定された関係タイプのみを対象としてください。"""

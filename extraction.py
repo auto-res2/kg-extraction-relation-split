@@ -1,11 +1,19 @@
-"""Extraction logic for Baseline and Proposed (Two-Stage) conditions."""
+"""Extraction logic for Baseline and RelationSplit conditions."""
 
+import unicodedata
 from dataclasses import dataclass, field
 
 from google import genai
 
 from schemas import EXTRACTION_SCHEMA, VERIFICATION_SCHEMA
-from prompts import build_system_prompt, build_extraction_prompt, build_verification_prompt
+from prompts import (
+    build_system_prompt,
+    build_extraction_prompt,
+    build_verification_prompt,
+    build_group_system_prompt,
+    build_group_extraction_prompt,
+    RELATION_GROUPS,
+)
 from llm_client import call_gemini
 from data_loader import format_few_shot_output
 
@@ -139,6 +147,138 @@ def run_proposed(
         "after_constraints": final_count,
     }
     return entities, final, stats
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize entity name for deduplication."""
+    return unicodedata.normalize("NFKC", name).strip().lower()
+
+
+def _merge_entities_across_passes(
+    all_pass_entities: list[list[dict]],
+    all_pass_triples: list[list[Triple]],
+) -> tuple[list[dict], list[Triple]]:
+    """Merge entities from multiple passes, deduplicating by normalized name.
+
+    Returns merged entity list and triples with updated entity references.
+    """
+    # Map normalized name -> merged entity
+    norm_to_entity: dict[str, dict] = {}
+    # Map (pass_index, old_id) -> new_id
+    id_remap: dict[tuple[int, str], str] = {}
+    next_id = 0
+
+    for pass_idx, entities in enumerate(all_pass_entities):
+        for ent in entities:
+            norm = _normalize_name(ent["name"])
+            if norm in norm_to_entity:
+                # Reuse existing merged entity
+                merged = norm_to_entity[norm]
+                id_remap[(pass_idx, ent["id"])] = merged["id"]
+            else:
+                new_eid = f"e{next_id}"
+                next_id += 1
+                merged = {
+                    "id": new_eid,
+                    "name": ent["name"],
+                    "type": ent["type"],
+                }
+                norm_to_entity[norm] = merged
+                id_remap[(pass_idx, ent["id"])] = new_eid
+
+    merged_entities = list(norm_to_entity.values())
+
+    # Remap triple entity references
+    merged_triples = []
+    for pass_idx, triples in enumerate(all_pass_triples):
+        for t in triples:
+            new_head = id_remap.get((pass_idx, t.head), t.head)
+            new_tail = id_remap.get((pass_idx, t.tail), t.tail)
+            merged_triples.append(Triple(
+                head=new_head,
+                head_name=t.head_name,
+                head_type=t.head_type,
+                relation=t.relation,
+                tail=new_tail,
+                tail_name=t.tail_name,
+                tail_type=t.tail_type,
+                evidence=t.evidence,
+            ))
+
+    # Deduplicate triples by (head, relation, tail)
+    seen = set()
+    deduped = []
+    for t in merged_triples:
+        key = (t.head, t.relation, t.tail)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(t)
+
+    return merged_entities, deduped
+
+
+def run_relation_split(
+    doc: dict,
+    few_shot: dict,
+    client: genai.Client,
+    schema_info: dict,
+    constraint_table: dict,
+) -> tuple[list[dict], list[Triple], dict]:
+    """Relation-Split Multi-Pass Extraction.
+
+    Iterates over relation groups, extracting with group-specific prompts,
+    then merges and applies constraints.
+    """
+    few_shot_output = format_few_shot_output(few_shot)
+
+    all_pass_entities = []
+    all_pass_triples = []
+    per_group_counts = {}
+
+    for group_name, group_pcodes in RELATION_GROUPS.items():
+        # Build group-specific prompts
+        system_prompt = build_group_system_prompt(
+            group_name, group_pcodes, schema_info["rel_info"]
+        )
+        user_prompt = build_group_extraction_prompt(
+            doc["doc_text"], few_shot["doc_text"], few_shot_output, group_pcodes
+        )
+
+        # Call LLM
+        result = call_gemini(client, system_prompt, user_prompt, EXTRACTION_SCHEMA)
+        entities, triples = _parse_extraction_result(result)
+
+        per_group_counts[group_name] = {
+            "entities": len(entities),
+            "triples": len(triples),
+        }
+
+        all_pass_entities.append(entities)
+        all_pass_triples.append(triples)
+
+    # Merge entities across passes
+    merged_entities, merged_triples = _merge_entities_across_passes(
+        all_pass_entities, all_pass_triples
+    )
+
+    total_union = len(merged_triples)
+
+    # Apply filters
+    valid_rels = set(schema_info["rel_info"].keys())
+    valid_types = {"PER", "ORG", "LOC", "ART", "DAT", "TIM", "MON", "%"}
+    merged_triples = filter_invalid_labels(merged_triples, valid_rels)
+    merged_triples = filter_invalid_entity_types(merged_triples, valid_types)
+
+    # Apply domain/range constraints
+    final_triples = apply_domain_range_constraints(merged_triples, constraint_table)
+
+    stats = {
+        "per_group": per_group_counts,
+        "total_union": total_union,
+        "after_constraints": len(final_triples),
+    }
+
+    return merged_entities, final_triples, stats
 
 
 def _verify_candidates(

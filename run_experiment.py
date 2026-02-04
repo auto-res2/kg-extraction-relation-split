@@ -7,9 +7,9 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from data_loader import load_jacred, select_dev_docs, select_few_shot
+from data_loader import load_jacred, select_dev_docs, select_few_shot, build_constraint_table
 from llm_client import load_api_key, create_client
-from extraction import run_baseline
+from extraction import run_baseline, run_relation_split
 from evaluation import align_entities, evaluate_relations, aggregate_results
 
 ENV_PATH = os.path.expanduser(
@@ -18,17 +18,33 @@ ENV_PATH = os.path.expanduser(
 NUM_DOCS = 10
 
 
-def run_condition(name, docs, few_shot, client, schema_info):
-    """Run one experimental condition on all docs."""
+def run_condition(name, docs, few_shot, client, schema_info, extraction_fn, constraint_table=None):
+    """Run one experimental condition on all docs.
+
+    Args:
+        name: Display name of the condition.
+        docs: List of dev documents.
+        few_shot: Few-shot example document.
+        client: Gemini client.
+        schema_info: Schema metadata dict.
+        extraction_fn: Either "baseline" or "relation_split".
+        constraint_table: Domain/range constraint table (required for relation_split).
+    """
     print(f"\n--- {name} ---")
     per_doc_results = []
 
     for i, doc in enumerate(docs):
         title = doc["title"]
 
-        # Currently only Baseline is implemented.
-        # RelationSplit will be added here as a second condition.
-        entities, triples = run_baseline(doc, few_shot, client, schema_info)
+        if extraction_fn == "baseline":
+            entities, triples = run_baseline(doc, few_shot, client, schema_info)
+            stats = {}
+        elif extraction_fn == "relation_split":
+            entities, triples, stats = run_relation_split(
+                doc, few_shot, client, schema_info, constraint_table
+            )
+        else:
+            raise ValueError(f"Unknown extraction_fn: {extraction_fn}")
 
         alignment = align_entities(entities, doc["vertexSet"])
         metrics = evaluate_relations(triples, doc.get("labels", []), alignment)
@@ -47,6 +63,8 @@ def run_condition(name, docs, few_shot, client, schema_info):
             "num_entities_aligned": len(alignment),
             **metrics,
         }
+        if stats:
+            doc_result["stats"] = stats
         per_doc_results.append(doc_result)
 
     agg = aggregate_results(per_doc_results)
@@ -85,21 +103,29 @@ def main():
         "rel2id": data["rel2id"],
     }
 
+    # Build constraint table from training data
+    constraint_table = build_constraint_table(data["train"])
+
     # Run conditions
     baseline_results = run_condition(
-        "Condition 1: Baseline (One-shot)", dev_docs, few_shot, client, schema_info
+        "Condition 1: Baseline (One-shot)",
+        dev_docs, few_shot, client, schema_info,
+        extraction_fn="baseline",
     )
-    # TODO: Add RelationSplit condition here once run_relation_split() is implemented
-    # relation_split_results = run_condition(
-    #     "Condition 2: RelationSplit", dev_docs, few_shot, client, schema_info, constraint_table
-    # )
+    relsplit_results = run_condition(
+        "Condition 2: RelSplit (Multi-Pass)",
+        dev_docs, few_shot, client, schema_info,
+        extraction_fn="relation_split",
+        constraint_table=constraint_table,
+    )
 
     # Comparison
     b = baseline_results["aggregate"]
+    r = relsplit_results["aggregate"]
     print("\n=== Comparison ===")
     print(f"{'':>14} {'Precision':>10} {'Recall':>8} {'F1':>6} {'TP':>5} {'FP':>5} {'FN':>5}")
     print(f"{'Baseline':>14} {b['precision']:>10.2f} {b['recall']:>8.2f} {b['f1']:>6.2f} {b['tp']:>5} {b['fp']:>5} {b['fn']:>5}")
-    # print(f"{'RelationSplit':>14} {r['precision']:>10.2f} {r['recall']:>8.2f} {r['f1']:>6.2f} {r['tp']:>5} {r['fp']:>5} {r['fn']:>5}")
+    print(f"{'RelSplit':>14} {r['precision']:>10.2f} {r['recall']:>8.2f} {r['f1']:>6.2f} {r['tp']:>5} {r['fp']:>5} {r['fn']:>5}")
 
     # Save results
     output = {
@@ -111,6 +137,7 @@ def main():
         },
         "conditions": {
             "baseline": baseline_results,
+            "relation_split": relsplit_results,
         },
     }
 
