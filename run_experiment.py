@@ -18,7 +18,7 @@ ENV_PATH = os.path.expanduser(
 NUM_DOCS = 10
 
 
-def run_condition(name, docs, few_shot, client, schema_info, constraint_table=None):
+def run_condition(name, docs, few_shot, client, schema_info):
     """Run one experimental condition on all docs."""
     print(f"\n--- {name} ---")
     per_doc_results = []
